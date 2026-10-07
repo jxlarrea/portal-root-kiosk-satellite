@@ -7,13 +7,20 @@ import android.os.Looper;
 import android.os.Process;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
 /** Local AccountManager cleanup for Portal user-account types. */
 public final class PortalAccountCtl {
+    private static final byte[] SQLITE_HEADER =
+            "SQLite format 3\000".getBytes(StandardCharsets.US_ASCII);
+    private static final Set<String> REQUIRED_DATABASE_NAMES = new HashSet<>(
+            Arrays.asList("aloha_users_db", "aloha_users_database"));
     private static final Set<String> META_ACCOUNT_TYPES = new HashSet<>(
             Arrays.asList(
                     "com.facebook.aloha.sso",
@@ -28,6 +35,21 @@ public final class PortalAccountCtl {
             return "android";
         }
         return "com.facebook.alohaservices.alohausers";
+    }
+
+    private static boolean hasSQLiteHeader(File file) throws IOException {
+        byte[] header = new byte[SQLITE_HEADER.length];
+        int offset = 0;
+        try (FileInputStream input = new FileInputStream(file)) {
+            while (offset < header.length) {
+                int count = input.read(header, offset, header.length - offset);
+                if (count < 0) {
+                    break;
+                }
+                offset += count;
+            }
+        }
+        return offset == header.length && Arrays.equals(header, SQLITE_HEADER);
     }
 
     private static int removeLocalIdentityRows() throws Exception {
@@ -54,14 +76,21 @@ public final class PortalAccountCtl {
                         || name.endsWith("-shm") || name.endsWith("-journal")) {
                     continue;
                 }
-                SQLiteDatabase database;
-                try {
-                    database = SQLiteDatabase.openDatabase(
-                            file.getAbsolutePath(), null,
-                            SQLiteDatabase.OPEN_READONLY);
-                } catch (SQLiteException ignored) {
+                // SQLiteDatabase may defer validation until the first query.
+                // Check the file signature first so real database failures stay fatal.
+                if (!hasSQLiteHeader(file)) {
+                    if (REQUIRED_DATABASE_NAMES.contains(name)) {
+                        throw new SQLiteException(
+                                "identity database has no SQLite header: "
+                                        + file.getAbsolutePath());
+                    }
+                    System.out.println("PORTAL_META_LOCAL_SKIP database="
+                            + file.getAbsolutePath() + " reason=non_sqlite_header");
                     continue;
                 }
+                SQLiteDatabase database = SQLiteDatabase.openDatabase(
+                        file.getAbsolutePath(), null,
+                        SQLiteDatabase.OPEN_READONLY);
                 Set<String> present = new HashSet<>();
                 try {
                     for (String table : targets) {
@@ -80,12 +109,6 @@ public final class PortalAccountCtl {
                         }
                         present.add(table);
                     }
-                } catch (SQLiteException ignored) {
-                    // These directories can contain non-SQLite auxiliary files.
-                    // A bad candidate must not abort cleanup of the real stores.
-                    System.out.println("PORTAL_META_LOCAL_SKIP database="
-                            + file.getAbsolutePath() + " reason=not_sqlite");
-                    continue;
                 } finally {
                     database.close();
                 }
@@ -95,21 +118,26 @@ public final class PortalAccountCtl {
                 database = SQLiteDatabase.openDatabase(
                         file.getAbsolutePath(), null,
                         SQLiteDatabase.OPEN_READWRITE);
-                database.beginTransaction();
+                int databaseTotal = 0;
                 try {
-                    for (String table : present) {
-                        int count = database.delete(table, null, null);
-                        total += count;
-                        System.out.println("PORTAL_META_LOCAL_DELETE database="
-                                + file.getAbsolutePath() + " table=" + table
-                                + " rows=" + count);
+                    database.beginTransaction();
+                    try {
+                        for (String table : present) {
+                            int count = database.delete(table, null, null);
+                            databaseTotal += count;
+                            System.out.println("PORTAL_META_LOCAL_DELETE database="
+                                    + file.getAbsolutePath() + " table=" + table
+                                    + " rows=" + count);
+                        }
+                        database.setTransactionSuccessful();
+                    } finally {
+                        database.endTransaction();
                     }
-                    database.setTransactionSuccessful();
-                    found.addAll(present);
                 } finally {
-                    database.endTransaction();
                     database.close();
                 }
+                total += databaseTotal;
+                found.addAll(present);
             }
         }
         if (!found.containsAll(targets)) {
