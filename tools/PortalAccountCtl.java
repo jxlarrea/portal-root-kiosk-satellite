@@ -80,7 +80,7 @@ public final class PortalAccountCtl {
                         }
                         present.add(table);
                     }
-                } catch (RuntimeException ignored) {
+                } catch (SQLiteException ignored) {
                     // These directories can contain non-SQLite auxiliary files.
                     // A bad candidate must not abort cleanup of the real stores.
                     System.out.println("PORTAL_META_LOCAL_SKIP database="
