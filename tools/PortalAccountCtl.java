@@ -1,6 +1,7 @@
 import android.accounts.Account;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteException;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Process;
@@ -58,7 +59,7 @@ public final class PortalAccountCtl {
                     database = SQLiteDatabase.openDatabase(
                             file.getAbsolutePath(), null,
                             SQLiteDatabase.OPEN_READONLY);
-                } catch (RuntimeException ignored) {
+                } catch (SQLiteException ignored) {
                     continue;
                 }
                 Set<String> present = new HashSet<>();
@@ -79,6 +80,12 @@ public final class PortalAccountCtl {
                         }
                         present.add(table);
                     }
+                } catch (RuntimeException ignored) {
+                    // These directories can contain non-SQLite auxiliary files.
+                    // A bad candidate must not abort cleanup of the real stores.
+                    System.out.println("PORTAL_META_LOCAL_SKIP database="
+                            + file.getAbsolutePath() + " reason=not_sqlite");
+                    continue;
                 } finally {
                     database.close();
                 }
