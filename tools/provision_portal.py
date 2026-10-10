@@ -3353,19 +3353,22 @@ class PortalProvisioner:
                 "Active Camera Clients:" in camera
                 and "Client Package Name: com.facebook.portal.aiservice" in camera
             )
-            appops = self.adb_run(
-                [
-                    "shell",
-                    "cmd",
-                    "appops",
-                    "get",
-                    "com.facebook.portal.aiservice",
-                    "CAMERA",
-                ],
+            appops_result = self.adb_run(
+                ["shell", "cmd", "appops", "get", "com.facebook.portal.aiservice", "CAMERA"],
                 timeout=10,
-            ).stdout
+            )
+            appops = appops_result.stdout
             camera_appop = " ".join(appops.split()) or "no-operation-recorded"
-            camera_allowed = "CAMERA: allow" in appops
+            explicit_modes = re.findall(
+                r"^\s*(?:Uid mode:\s*)?CAMERA:\s*(\w+)", appops, re.MULTILINE
+            )
+            default_allow = re.fullmatch(
+                r"No operations\.\s+Default mode:\s*allow\s*", appops.strip()
+            ) is not None
+            camera_allowed = appops_result.returncode == 0 and (
+                all(mode == "allow" for mode in explicit_modes)
+                if explicit_modes else default_allow
+            )
             logs = self.adb_run(
                 ["shell", "logcat", "-d", "-v", "brief"], timeout=20
             ).stdout
@@ -3480,12 +3483,19 @@ class PortalProvisioner:
                 )
                 return
             time.sleep(2)
-        camera_hint = (
-            " Check that the Portal's physical camera cover is open and its "
-            "camera/microphone privacy control is off."
-            if not camera_active
-            else ""
-        )
+        camera_hint = ""
+        if not camera_active:
+            if presence_no_users:
+                camera_hint += (
+                    " AIService logs report no users; its camera pipeline "
+                    "may not have initialized."
+                )
+            if privacy_blocked:
+                camera_hint += " AIService logs also report privacy mode blocking startup."
+            camera_hint += (
+                " An inactive camera can also result from the physical camera "
+                "cover or camera/microphone privacy control."
+            )
         raise ProvisionError(
             "presence pipeline did not pass its live compatibility check: "
             f"pid={pid!r} camera_active={int(camera_active)} "
