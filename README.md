@@ -94,6 +94,7 @@ needs to remain in view during the reboot sequence.
 | Meta Portal+ (2nd generation) | `cipher` | 10 | `Facebook/cipher_prod/cipher:10/QKQ1.210213.001/4051355900018050:user/prod-keys` | `4.9.227-perf+` | Tested |
 | Meta Portal 10-inch (2nd generation) | `omni` | 10 | `Facebook/omni_prod/omni:10/QKQ1.210213.001/3051355900018050:user/prod-keys` | `4.9.227-perf+` | Tested |
 | Meta Portal Mini | `omni` | 10 | `Facebook/omni_prod/omni:10/QKQ1.210213.001/3051355900018050:user/prod-keys` | `4.9.227-perf+` | Tested |
+| Meta Portal TV | `ripley` | 9 | `Facebook/ripley_prod/ripley:9/PKQ1.191202.001/2041515800015050:user/prod-keys` | `4.4.153+` | Tested |
 
 Support is exact-build specific. Other models and firmware versions
 need their own verified target before the provisioner will accept them.
@@ -107,9 +108,8 @@ for `Portal` and `Portal+`.
 These models are candidates for future ports based on Meta's published kernel
 sources and archived firmware. They are **not supported by the current build**.
 
-| Model | Family | Android | Porting outlook |
-| --- | --- | --- | --- |
-| Meta Portal TV | `ripley` | 9 | Possible with a Linux 4.4 and TV-specific port. |
+No additional models are currently in the porting pipeline; Meta Portal TV
+(`ripley`) moved to [Supported models](#supported-models).
 
 To request support, open an issue with the retail model and this output. Do
 not publish an ADB address, pairing code or account information.

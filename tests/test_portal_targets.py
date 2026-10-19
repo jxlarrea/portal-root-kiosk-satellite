@@ -13,7 +13,7 @@ from portal_targets import TARGETS, find_target  # noqa: E402
 
 class PortalTargetSelectionTest(unittest.TestCase):
     def test_every_supported_build_selects_only_its_exact_target(self) -> None:
-        self.assertEqual(len(TARGETS), 6)
+        self.assertEqual(len(TARGETS), 7)
         for target in TARGETS:
             selected = find_target(
                 target.device,
@@ -112,6 +112,33 @@ class PortalTargetSelectionTest(unittest.TestCase):
         self.assertEqual(
             omni.uid1000_host_package,
             "com.facebook.alohasdk.platformsecurestate",
+        )
+
+    def test_portal_tv_ripley_profile(self) -> None:
+        targets = {target.key: target for target in TARGETS}
+        ripley = targets["portal-tv-ripley-2041515800015050"]
+        self.assertEqual(ripley.device, "ripley")
+        self.assertEqual(ripley.product_models, ("PortalTV",))
+        self.assertEqual(ripley.kernel, "4.4.153+")
+        self.assertEqual(ripley.stack_route, "ptrace")
+        self.assertEqual(ripley.kaslr_strategy, "bugreport")
+        self.assertEqual(ripley.kaslr_pc_offsets, ())
+        self.assertEqual(ripley.memstart_strategy, "bugreport")
+        self.assertEqual(ripley.proc_uid_sentinel, "user")
+        self.assertEqual(ripley.proc_uid_user_ids, (10, 11, 12))
+        self.assertTrue(ripley.kgsl_reclaim)
+        self.assertEqual(ripley.kgsl_reclaim_allocations, 4096)
+        self.assertEqual(ripley.reclaim_pairs, 128)
+        self.assertEqual(ripley.reclaim_sends, 128)
+        self.assertTrue(ripley.recover_watch_result_after_disconnect)
+        self.assertEqual(
+            ripley.wireless_adb_file_property, "persist.adb.tcp.port"
+        )
+        self.assertEqual(
+            ripley.exploit_env["GHOSTLOCK_PTRACE_WAITER_OFF"], "0x130"
+        )
+        self.assertEqual(
+            ripley.exploit_env["GHOSTLOCK_CONSUME_SWEEPS"], "6"
         )
 
     def test_portal_mini_uses_a_distinct_model_guard_on_the_omni_build(
