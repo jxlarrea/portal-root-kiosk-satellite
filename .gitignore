@@ -37,3 +37,4 @@ __pycache__/
 test-results/*
 .remember
 AGENTS.md
+.claude/*
