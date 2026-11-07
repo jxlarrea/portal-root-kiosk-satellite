@@ -2336,3 +2336,18 @@ On the second boot otad started before MobileConfig and slept for 241
 minutes, while its effective config already read `kOtaJsonUrl` as
 `https://127.0.0.1:9/`. The wake-up check at the end of that sleep is the
 remaining observation.
+
+The Portal Mini 192.168.1.74 (omni 3051355900018050) confirmed the fix on a
+second model. Its preflight reported the earlier gate-only file as
+`poll_interval_minutes=6 update_url_blocked=0 action=install`. The installer
+upgraded that file in place under omni's own provider UID 10041
+(`existed=1 upgraded=1 ok=1`, exploit attempt 2). Boots
+`fd19bbb5-93ae-46e2-8f72-05a45cb1fece` and
+`da99e7cc-d6e1-41fd-8e3c-878d8861bfef` both reported
+`poll_interval_minutes=1000000 update_url=https://127.0.0.1:9/ source=OVERRIDE`.
+On the second boot otad again started before MobileConfig and slept for 241
+minutes with `kOtaJsonUrl` already read as `https://127.0.0.1:9/`. A further
+`--disable-updates` run skipped with `update_url_blocked=1 action=skip` and no
+exploit. The otad binaries from the aloha, ripley, omni and cipher firmware
+archives all read `jsonqueryurl` and carry the same 241 minute default, so
+the override and the preflight apply to every supported model.
