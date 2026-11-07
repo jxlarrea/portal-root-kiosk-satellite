@@ -60,7 +60,11 @@ PRELOAD_REMOTE = "/data/local/tmp/preload-portal.so"
 HELPER_REMOTE = "/data/local/tmp/libportal_audio_persist.so"
 AUDIO_CTL_LOCAL = ROOT / "exploit/build/portal-audio-ctl.jar"
 AUDIO_CTL_REMOTE = "/data/local/tmp/portal-audio-ctl.jar"
-MHA_TUNING_DEVICE = "/vendor/etc/audio/omni/mha_tuning_blobs.tub"
+# Omni firmware ships one MHA tuning directory per hardware variant and the
+# tuning manager formats /vendor/etc/audio/<ro.hardware>/ to pick one. The
+# Portal Mini is omni and the second-generation 10-inch Portal is atlas.
+MHA_TUNING_VARIANTS = ("omni", "atlas")
+MHA_TUNING_BLOB_PROPERTY = "ro.vendor.audio.dynamic_tuning_blob_file"
 MHA_TUNING_STOCK_REMOTE = "/data/local/tmp/portal-mha-tuning-stock.tub"
 MHA_TUNING_PATCHED_REMOTE = "/data/local/tmp/portal-mha-tuning-disabled.tub"
 MHA_TUNING_BACKUP_REMOTE = (
@@ -218,6 +222,16 @@ OTA_POLL_INTERVAL_MINUTES = 1_000_000
 OTA_JSON_URL = "https://127.0.0.1:9/"
 
 
+def mha_tuning_device_path(variant: str) -> str:
+    """Return the tuning blob the omni tuning manager loads for a variant."""
+    if variant not in MHA_TUNING_VARIANTS:
+        raise ProvisionError(
+            f"unknown MHA tuning hardware variant {variant!r}; expected one of "
+            + ", ".join(MHA_TUNING_VARIANTS)
+        )
+    return f"/vendor/etc/audio/{variant}/mha_tuning_blobs.tub"
+
+
 def parse_ota_config(dump: str) -> dict[str, str] | None:
     """Return otad's effective config values, or None for an incomplete dump.
 
@@ -326,6 +340,7 @@ class PortalProvisioner:
         self.audio_already_configured = False
         self.mha_tuning_stock_local: pathlib.Path | None = None
         self.mha_tuning_patched_local: pathlib.Path | None = None
+        self.mha_tuning_variant_name: str | None = None
         self.restore_audio = restore_audio
         self.install_kiosk_satellite = install_kiosk_satellite
         self.kiosk_apk: pathlib.Path | None = None
@@ -881,11 +896,32 @@ class PortalProvisioner:
             )
         return local.read_bytes()
 
+    def mha_tuning_variant(self) -> str:
+        """Return the hardware variant whose tuning directory omni loads."""
+        if self.mha_tuning_variant_name is not None:
+            return self.mha_tuning_variant_name
+        hardware = self.adb_run(
+            ["shell", "getprop", "ro.hardware"], timeout=5, check=True
+        ).stdout.strip()
+        blob_override = self.adb_run(
+            ["shell", "getprop", MHA_TUNING_BLOB_PROPERTY], timeout=5
+        ).stdout.strip()
+        if blob_override:
+            raise ProvisionError(
+                f"{MHA_TUNING_BLOB_PROPERTY} is set to {blob_override!r}; "
+                "the tuning manager would load that file instead of the "
+                "hardware variant directory, refusing to patch /vendor"
+            )
+        mha_tuning_device_path(hardware)
+        self.mha_tuning_variant_name = hardware
+        return hardware
+
     def prepare_mha_tuning_payloads(self) -> None:
         current_path = self.log_dir / "mha_tuning_blobs.device.tub"
         stock_path = self.log_dir / "mha_tuning_blobs.stock.tub"
         patched_path = self.log_dir / "mha_tuning_blobs.disabled.tub"
-        current = self.pull_file(MHA_TUNING_DEVICE, current_path)
+        variant = self.mha_tuning_variant()
+        current = self.pull_file(mha_tuning_device_path(variant), current_path)
         current_hash = sha256(current)
 
         if current_hash == OMNI_STOCK_SHA256:
@@ -911,6 +947,7 @@ class PortalProvisioner:
         self.mha_tuning_patched_local = patched_path
         print(
             "MHA_TUNING_PREPARED "
+            f"variant={variant} "
             f"current={current_hash} stock={OMNI_STOCK_SHA256} "
             f"patched={patched_hash} parameters={len(changes)} "
             f"action={'restore' if self.restore_audio else 'disable'}",
@@ -1456,6 +1493,11 @@ class PortalProvisioner:
                     if target is not None and target.device == "omni"
                     else "voice-param"
                     if target is not None
+                    else None
+                ),
+                "mha_tuning_variant": (
+                    shell("getprop", "ro.hardware", timeout=5)
+                    if target is not None and target.device == "omni"
                     else None
                 ),
                 "restored_marker": audio_restored,
@@ -4366,6 +4408,9 @@ class PortalProvisioner:
                         "GHOSTLOCK_MHA_TUNING_PATCHED": (
                             MHA_TUNING_PATCHED_REMOTE
                         ),
+                        "GHOSTLOCK_MHA_TUNING_TARGET": mha_tuning_device_path(
+                            self.mha_tuning_variant()
+                        ),
                     }
                 )
         if self.restore_audio:
@@ -4389,6 +4434,9 @@ class PortalProvisioner:
                         "GHOSTLOCK_MHA_TUNING_STOCK": MHA_TUNING_STOCK_REMOTE,
                         "GHOSTLOCK_MHA_TUNING_PATCHED": (
                             MHA_TUNING_PATCHED_REMOTE
+                        ),
+                        "GHOSTLOCK_MHA_TUNING_TARGET": mha_tuning_device_path(
+                            self.mha_tuning_variant()
                         ),
                     }
                 )

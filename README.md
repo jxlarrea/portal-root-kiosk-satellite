@@ -340,10 +340,12 @@ Portal Mini and second-generation 10-inch Portal (`omni`) use the MH Acoustics
 MHA backend instead. On those devices the provisioner keeps the stereo capture
 engine active and patches the firmware tuning profiles to disable
 double-talk echo suppression, residual-echo suppression, and noise suppression
-in both post-processing paths. It validates the exact shipped blob before
-writing, preserves a byte-for-byte stock backup, and restores the vendor block
-device's read-only state afterward. The restore action puts that stock blob
-back.
+in both post-processing paths. The omni firmware ships one tuning directory per
+hardware variant, `omni` for the Portal Mini and `atlas` for the 10-inch
+Portal, and the provisioner patches the one named by the device's
+`ro.hardware`. It validates the exact shipped blob before writing, preserves a
+byte-for-byte stock backup, and restores the vendor block device's read-only
+state afterward. The restore action puts that stock blob back.
 
 The change is system-wide, so every Android application receives audio without
 those processing stages. On STAX devices, the watchdog reapplies the values

@@ -2351,3 +2351,53 @@ minutes with `kOtaJsonUrl` already read as `https://127.0.0.1:9/`. A further
 exploit. The otad binaries from the aloha, ripley, omni and cipher firmware
 archives all read `jsonqueryurl` and carry the same 241 minute default, so
 the override and the preflight apply to every supported model.
+
+176. Investigated issue #26, a second-generation 10-inch Portal (omni
+3051355900018050, target `portal-10-omni`) where every provisioning action
+succeeded but the audio watchdog logged `persistent audio watchdog started
+backend=java dsp=mha` and then `audio processing apply failed count=1
+backend=java`, and `--status` showed `mha_processing_verified=false`. The
+native log for the same run reported `MHA tuning install` with `ok=1`.
+
+The omni vendor partition in the firmware archive ships two MHA tuning
+directories, `/vendor/etc/audio/omni/` and `/vendor/etc/audio/atlas/`, each
+with `mha_tuning_blobs.tub`, `mha_tunings.json` and
+`mha_parameter_descriptions.xml`, next to `mixer_paths_omni.xml`,
+`mixer_paths_atlas.xml`, `init.omni.rc` and `init.atlas.rc`. Both tuning blobs
+are byte-identical to the validated stock blob, and the two description files
+differ only by one extra omni parameter. `tuning_manager_service` reads
+`ro.hardware` (its log string is `could not get hw prop name`) and formats
+`/vendor/etc/audio/%s/mha_tuning_blobs.tub` and
+`/vendor/etc/audio/%s/mha_tunings.json` from it, unless
+`ro.vendor.audio.dynamic_tuning_blob_file` names another file. The Portal Mini
+reports `ro.hardware=omni` and its HAL log confirms the omni files. Android
+loads `init.${ro.hardware}.rc`, so the 10-inch Portal, the only other omni
+build model, is the `atlas` variant. Meta's update server also names the
+family `ota.omni_prod.atlas.user`.
+
+The installer always wrote `/vendor/etc/audio/omni/mha_tuning_blobs.tub`. On
+an atlas device that file is never loaded, so the write succeeded, the native
+step reported `ok=1`, the live MHA controls stayed at their stock values and
+`PortalAudioCtl` failed its readback on every watchdog pass.
+
+The host now reads `ro.hardware`, accepts only `omni` or `atlas`, refuses a
+device that sets the blob-file override property, pulls and validates the
+blob from that variant's directory and passes the resolved path to the
+native installer. The native side recomputes the allowed path from the same
+property and refuses any mismatch before it remounts `/vendor`. The Portal
+Mini path is unchanged. The fix is verified by unit tests and compiles for
+omni and terry. It has not run on a 10-inch Portal, which is not available
+here, and the `ro.hardware=atlas` inference for that model still needs one
+`getprop ro.hardware` from such a device.
+
+The Portal Mini 192.168.1.74 verified the omni path on the new code.
+`--restore-audio` resolved `variant=omni`, logged `MHA tuning restore
+target=/vendor/etc/audio/omni/mha_tuning_blobs.tub ... verified=1 ok=1`
+through the raw block path, returned the omni blob to the stock hash, left the
+atlas blob untouched and verified the watchdog absent on boots
+`b53fb8c6-67a4-4338-bd45-64b9664de5f5` and
+`4c72f597-7f38-45f4-82c6-1e91feefdf90`. `--audio` then logged `MHA tuning
+install target=/vendor/etc/audio/omni/mha_tuning_blobs.tub ... ok=1`, and the
+watchdog reported `mha audio processing verified aec=0 ns=0` on boots
+`1bd0b089-afc1-4d57-8993-3d5f451933be` and
+`0920392f-9219-401b-8eb9-e31eae2bdcc4`.

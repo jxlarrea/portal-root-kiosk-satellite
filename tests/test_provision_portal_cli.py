@@ -20,6 +20,7 @@ from provision_portal import (  # noqa: E402
     ADB_ENABLED_SETTING,
     KIOSK_RELEASE_DOWNLOAD_PREFIX,
     MHA_AUDIO_VERIFIED_LOG,
+    MHA_TUNING_BLOB_PROPERTY,
     OTA_JSON_URL,
     OTA_POLL_INTERVAL_MINUTES,
     REMOTE_WIPE_COMPONENTS,
@@ -27,6 +28,7 @@ from provision_portal import (  # noqa: E402
     ProvisionError,
     android_build_environment,
     build,
+    mha_tuning_device_path,
     parse_args,
     parse_ota_config,
 )
@@ -1405,6 +1407,79 @@ class OtaOverrideVerificationTest(unittest.TestCase):
             ), contextlib.redirect_stdout(io.StringIO()):
                 self.assertTrue(provisioner.ota_preflight())
             self.assertEqual(calls["dumpsys"], 2)
+
+
+class MhaTuningVariantTest(unittest.TestCase):
+    def provisioner(self, temporary: str) -> PortalProvisioner:
+        provisioner = PortalProvisioner(
+            "192.0.2.1:5555", 1, pathlib.Path(temporary), audio=True
+        )
+        provisioner.target = next(
+            target for target in TARGETS if target.device == "omni"
+        )
+        return provisioner
+
+    @staticmethod
+    def adb(properties: dict[str, str]) -> mock.Mock:
+        def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["shell", "getprop"]:
+                return subprocess.CompletedProcess(
+                    args, 0, properties.get(args[2], "") + "\n"
+                )
+            return subprocess.CompletedProcess(args, 0, "")
+
+        return mock.Mock(side_effect=run)
+
+    def test_device_path_follows_the_hardware_variant(self) -> None:
+        self.assertEqual(
+            mha_tuning_device_path("omni"),
+            "/vendor/etc/audio/omni/mha_tuning_blobs.tub",
+        )
+        self.assertEqual(
+            mha_tuning_device_path("atlas"),
+            "/vendor/etc/audio/atlas/mha_tuning_blobs.tub",
+        )
+        with self.assertRaises(ProvisionError):
+            mha_tuning_device_path("terry")
+        with self.assertRaises(ProvisionError):
+            mha_tuning_device_path("")
+
+    def test_variant_comes_from_ro_hardware(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb({"ro.hardware": "atlas"})
+            with mock.patch.object(provisioner, "adb_run", adb):
+                self.assertEqual(provisioner.mha_tuning_variant(), "atlas")
+                self.assertEqual(provisioner.mha_tuning_variant(), "atlas")
+            getprop_calls = [
+                call.args[0][2]
+                for call in adb.call_args_list
+                if call.args[0][:2] == ["shell", "getprop"]
+            ]
+            self.assertEqual(
+                getprop_calls, ["ro.hardware", MHA_TUNING_BLOB_PROPERTY]
+            )
+
+    def test_variant_refuses_a_blob_file_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb(
+                {
+                    "ro.hardware": "omni",
+                    MHA_TUNING_BLOB_PROPERTY: "/data/vendor/custom.tub",
+                }
+            )
+            with mock.patch.object(provisioner, "adb_run", adb), \
+                    self.assertRaises(ProvisionError):
+                provisioner.mha_tuning_variant()
+
+    def test_variant_refuses_unknown_hardware(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb({"ro.hardware": "qcs605"})
+            with mock.patch.object(provisioner, "adb_run", adb), \
+                    self.assertRaises(ProvisionError):
+                provisioner.mha_tuning_variant()
 
 
 if __name__ == "__main__":

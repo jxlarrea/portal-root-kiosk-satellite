@@ -177,6 +177,14 @@ SELinux was enforcing, and ADB was enabled. The transient
 `service.adb.tcp.port` property was empty, which does not prevent adbd from
 listening when the persistent property is present.
 
+The omni MHA tuning patch now targets the hardware variant directory. Omni
+firmware carries `/vendor/etc/audio/omni/` and `/vendor/etc/audio/atlas/`, each
+with its own `mha_tuning_blobs.tub`, and `tuning_manager_service` loads the one
+named by `ro.hardware`. The Portal Mini is `omni` and the second-generation
+10-inch Portal is `atlas`. Earlier versions always patched the `omni` file, so
+the 10-inch Portal kept its stock suppression and the audio watchdog reported
+`audio processing apply failed` (issue #26). See finding 176.
+
 Automatic firmware updates are now disabled through Meta's own MobileConfig
 precedence layer. Exact APK analysis identified unit
 `sessionless_aloha_ota_daemon` (5014), parameter
