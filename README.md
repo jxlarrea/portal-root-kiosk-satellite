@@ -462,13 +462,16 @@ python3 tools/provision_portal.py \
 ```
 
 This disables Meta's two OTA user-interface packages and installs a local
-MobileConfig override setting `firmware_ota_update_enable=false`. Shared update
-infrastructure remains installed, but the native OTA daemon stays idle and
-does not discover or install firmware.
+MobileConfig override for the native OTA daemon. The override sets
+`firmware_ota_update_enable=false`, raises the daemon's update-check interval
+from 6 minutes to 1,000,000 minutes and points its update URL at a closed local
+port, so the Portal stops contacting Meta's update servers. Shared update
+infrastructure remains installed.
 
 The provisioner verifies the disabled packages and requires Meta's own service
-to report the value from the local override on two boots. It refuses to replace
-an unrelated existing override. The original file state is recorded under
+to report these values from the local override on two boots. It refuses to
+replace an unrelated existing override and upgrades the gate-only override
+that earlier versions installed. The original file state is recorded under
 `/data/local/tmp/portal-ota-backup`.
 
 Restore that exact override state and re-enable both OTA packages with:

@@ -211,6 +211,30 @@ CAMERA_SERVICE_COMPONENT = (
 )
 OTA_UI_PACKAGE = "com.facebook.aloha.otaui"
 OTA_SETUP_PACKAGE = "com.facebook.aloha.alohaotasetup"
+# Minutes otad sleeps between update checks once the OTA override is
+# installed, and the closed local URL it uses for any check it still makes.
+# Both must match the native override in exploit/src/fops.c.
+OTA_POLL_INTERVAL_MINUTES = 1_000_000
+OTA_JSON_URL = "https://127.0.0.1:9/"
+
+
+def parse_ota_config(dump: str) -> dict[str, str] | None:
+    """Return otad's effective config values, or None for an incomplete dump.
+
+    otad answers dumpsys while it is still starting and the output can stop
+    before its config section, so a missing value is not a stock value.
+    """
+    if (
+        "Dump OtaConfig" not in dump
+        or "getBool(kFirmwareOtaUpdateEnable):" not in dump
+    ):
+        return None
+    return {
+        match.group(1): match.group(2).strip()
+        for match in re.finditer(
+            r"get(?:Bool|Int64|String)\((k\w+)\): ([^\r\n]*)", dump
+        )
+    }
 DEFAULT_UID1000_HOST_PACKAGE = "com.facebook.alohasdk.platformbatterystate"
 CAMERA_LIGHT_HELPER_REMOTE = "/data/local/tmp/portal-camera-led-watch"
 CAMERA_LIGHT_HOOK_REMOTE = "/data/local/tmp/portal-uid1000-hook.bin"
@@ -1458,6 +1482,14 @@ class PortalProvisioner:
                 ),
                 "firmware_gate_false": (
                     "getBool(kFirmwareOtaUpdateEnable): false" in ota_dump
+                ),
+                "poll_interval_minutes": (
+                    (parse_ota_config(ota_dump) or {}).get(
+                        "kUpdateIntervalInitialMinutes"
+                    )
+                ),
+                "update_url": (
+                    (parse_ota_config(ota_dump) or {}).get("kOtaJsonUrl")
                 ),
                 "restored_marker": ota_restored,
             },
@@ -3639,18 +3671,64 @@ class PortalProvisioner:
         packages_disabled = all(
             f"package:{package}" in disabled for package in packages
         )
-        ota_dump = self.adb_run(
-            ["shell", "dumpsys", "facebook.aloha.otaservice"], timeout=10
-        ).stdout
-        gate_false = "getBool(kFirmwareOtaUpdateEnable): false" in ota_dump
-        healthy = packages_disabled and gate_false
+        config, _ = self.read_ota_config(wait_seconds=30)
+        gate_false, polling_off = self.ota_override_applied(config)
+        interval = (
+            config.get("kUpdateIntervalInitialMinutes", "missing")
+            if config is not None
+            else "unknown"
+        )
+        url_blocked = (
+            config is not None and config.get("kOtaJsonUrl") == OTA_JSON_URL
+        )
+        healthy = packages_disabled and gate_false and polling_off
         print(
             "OTA_PREFLIGHT "
             f"packages_disabled={int(packages_disabled)} "
             f"firmware_gate_false={int(gate_false)} "
+            f"poll_interval_minutes={interval} "
+            f"update_url_blocked={int(url_blocked)} "
+            f"dump={'complete' if config is not None else 'incomplete'} "
             f"action={'skip' if healthy else 'install'}"
         )
         return healthy
+
+    def read_ota_config(
+        self, wait_seconds: int
+    ) -> tuple[dict[str, str] | None, str]:
+        """Read otad's config, retrying while otad is starting or slow."""
+        deadline = time.monotonic() + wait_seconds
+        dump = ""
+        while True:
+            try:
+                dump = self.adb_run(
+                    ["shell", "dumpsys", "facebook.aloha.otaservice"],
+                    timeout=15,
+                ).stdout
+            except ProvisionError:
+                dump = ""
+            config = parse_ota_config(dump)
+            if config is not None or time.monotonic() >= deadline:
+                return config, dump
+            time.sleep(2)
+
+    @staticmethod
+    def ota_override_applied(
+        config: dict[str, str] | None,
+    ) -> tuple[bool, bool]:
+        """Return whether the OTA gate is off and update polling is off.
+
+        Polling counts as off only when otad both sleeps for the override
+        interval and sends any remaining check to the closed local URL.
+        """
+        if config is None:
+            return False, False
+        return (
+            config.get("kFirmwareOtaUpdateEnable") == "false",
+            config.get("kUpdateIntervalInitialMinutes")
+            == str(OTA_POLL_INTERVAL_MINUTES)
+            and config.get("kOtaJsonUrl") == OTA_JSON_URL,
+        )
 
     def debloat_preflight(self) -> bool:
         installed, disabled = self.package_sets()
@@ -5291,10 +5369,7 @@ class PortalProvisioner:
         last_dump = ""
         last_log = ""
         while time.monotonic() < deadline:
-            result = self.adb_run(
-                ["shell", "dumpsys", "facebook.aloha.otaservice"], timeout=10
-            )
-            last_dump = result.stdout
+            config, last_dump = self.read_ota_config(wait_seconds=0)
             last_log = self.adb_run(
                 [
                     "shell",
@@ -5312,17 +5387,20 @@ class PortalProvisioner:
                 r"latestBoolean: false, source: OVERRIDE",
                 last_log,
             )
-            if "getBool(kFirmwareOtaUpdateEnable): false" in last_dump:
+            gate_false, polling_off = self.ota_override_applied(config)
+            if gate_false and polling_off:
                 print(
                     "OTA_BLOCK_OK packages=disabled "
-                    "firmware_ota_update_enable=false source="
+                    "firmware_ota_update_enable=false "
+                    f"poll_interval_minutes={OTA_POLL_INTERVAL_MINUTES} "
+                    f"update_url={OTA_JSON_URL} source="
                     + ("OVERRIDE" if override_loaded else "effective-config")
                 )
                 return
             time.sleep(2)
         raise ProvisionError(
-            "OTA daemon did not report its firmware-update gate from the "
-            "local override; recent dump/log follow:\n"
+            "OTA daemon did not report its firmware-update gate and polling "
+            "interval from the local override; recent dump/log follow:\n"
             + last_dump[-3000:]
             + "\n"
             + last_log[-3000:]

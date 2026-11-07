@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import pathlib
@@ -19,12 +20,15 @@ from provision_portal import (  # noqa: E402
     ADB_ENABLED_SETTING,
     KIOSK_RELEASE_DOWNLOAD_PREFIX,
     MHA_AUDIO_VERIFIED_LOG,
+    OTA_JSON_URL,
+    OTA_POLL_INTERVAL_MINUTES,
     REMOTE_WIPE_COMPONENTS,
     PortalProvisioner,
     ProvisionError,
     android_build_environment,
     build,
     parse_args,
+    parse_ota_config,
 )
 from meta_debloat_components import (  # noqa: E402
     DEBLOAT_COMPONENT_NAMES,
@@ -1270,6 +1274,137 @@ class KioskSatelliteInstallCliTest(unittest.TestCase):
                 self.assertTrue(
                     provisioner.package_verifier_before_install_disabled
                 )
+
+
+OTA_DUMP_HEAD = (
+    "----------\n"
+    "Dump OtaService\n"
+    "    lastKnownOtaStatus_: 0, (OtaStatusEnum: idle)\n"
+)
+
+
+def ota_dump(
+    gate: str = "false",
+    interval: str = "1000000",
+    url: str = OTA_JSON_URL,
+) -> str:
+    return (
+        OTA_DUMP_HEAD
+        + "----------\n"
+        "Dump OtaConfig\n"
+        f"    getString(kOtaJsonUrl): {url}\n"
+        "    getBool(kUpdateIntervalFromServer): false\n"
+        f"    getInt64(kUpdateIntervalInitialMinutes): {interval}\n"
+        f"    getBool(kFirmwareOtaUpdateEnable): {gate}\n"
+        "----------\n"
+    )
+
+
+class OtaOverrideVerificationTest(unittest.TestCase):
+    def provisioner(self, temporary: str) -> PortalProvisioner:
+        provisioner = PortalProvisioner(
+            "192.0.2.1:5555",
+            1,
+            pathlib.Path(temporary),
+            disable_updates=True,
+        )
+        provisioner.target = next(
+            target for target in TARGETS if target.device == "terry"
+        )
+        return provisioner
+
+    def adb(self, dumps: list[str]) -> mock.Mock:
+        disabled = "".join(
+            f"package:{package}\n"
+            for package in next(
+                target for target in TARGETS if target.device == "terry"
+            ).ota_packages
+        )
+        remaining = list(dumps)
+
+        def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["shell", "pm"]:
+                return subprocess.CompletedProcess(args, 0, disabled)
+            if args[:2] == ["shell", "dumpsys"]:
+                text = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+                return subprocess.CompletedProcess(args, 0, text)
+            return subprocess.CompletedProcess(args, 0, "")
+
+        return mock.Mock(side_effect=run)
+
+    def test_parse_rejects_dump_cut_before_config(self) -> None:
+        self.assertIsNone(parse_ota_config(OTA_DUMP_HEAD))
+        config = parse_ota_config(ota_dump())
+        self.assertEqual(config["kFirmwareOtaUpdateEnable"], "false")
+        self.assertEqual(
+            config["kUpdateIntervalInitialMinutes"],
+            str(OTA_POLL_INTERVAL_MINUTES),
+        )
+
+    def test_preflight_retries_while_otad_is_starting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb([OTA_DUMP_HEAD, OTA_DUMP_HEAD, ota_dump()])
+            with mock.patch.object(provisioner, "adb_run", adb), mock.patch(
+                "provision_portal.time.sleep"
+            ), contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertTrue(provisioner.ota_preflight())
+            self.assertIn("dump=complete action=skip", output.getvalue())
+
+    def test_preflight_reinstalls_legacy_gate_only_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb(
+                [
+                    ota_dump(
+                        interval="6",
+                        url="https://graph.facebook.com/mobile_release_updates",
+                    )
+                ]
+            )
+            with mock.patch.object(provisioner, "adb_run", adb), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertFalse(provisioner.ota_preflight())
+            self.assertIn(
+                "firmware_gate_false=1 poll_interval_minutes=6 "
+                "update_url_blocked=0 dump=complete action=install",
+                output.getvalue(),
+            )
+
+    def test_preflight_requires_blocked_update_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb(
+                [ota_dump(url="https://graph.facebook.com/mobile_release_updates")]
+            )
+            with mock.patch.object(provisioner, "adb_run", adb), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertFalse(provisioner.ota_preflight())
+            self.assertIn(
+                "poll_interval_minutes=1000000 update_url_blocked=0",
+                output.getvalue(),
+            )
+
+    def test_preflight_survives_dumpsys_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provisioner = self.provisioner(temporary)
+            adb = self.adb([ota_dump()])
+            original = adb.side_effect
+            calls = {"dumpsys": 0}
+
+            def flaky(args: list[str], **kwargs: object):
+                if args[:2] == ["shell", "dumpsys"]:
+                    calls["dumpsys"] += 1
+                    if calls["dumpsys"] == 1:
+                        raise ProvisionError("command timed out: adb shell dumpsys")
+                return original(args, **kwargs)
+
+            adb.side_effect = flaky
+            with mock.patch.object(provisioner, "adb_run", adb), mock.patch(
+                "provision_portal.time.sleep"
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(provisioner.ota_preflight())
+            self.assertEqual(calls["dumpsys"], 2)
 
 
 if __name__ == "__main__":

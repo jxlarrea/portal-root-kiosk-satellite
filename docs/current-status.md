@@ -181,11 +181,21 @@ Automatic firmware updates are now disabled through Meta's own MobileConfig
 precedence layer. Exact APK analysis identified unit
 `sessionless_aloha_ota_daemon` (5014), parameter
 `firmware_ota_update_enable` (36), and the app-private override file
-`files/mobileconfig/mc_overrides.json`. The privileged installer writes only
-that false override with UID/GID 10044, the original app-data SELinux label,
-`fsync`, and an atomic rename. It refuses to replace an unrelated existing
-override file and records that the file was originally absent under
+`files/mobileconfig/mc_overrides.json`. The privileged installer writes the
+override with UID/GID 10044, the original app-data SELinux label, `fsync`, and
+an atomic rename. It refuses to replace an unrelated existing override file and
+records that the file was originally absent under
 `/data/local/tmp/portal-ota-backup`.
+
+The parameter 36 override alone did not stop the daemon from contacting Meta.
+`firmware_ota_update_enable` only selects otad's update endpoint, and the
+daemon still queried `graph.facebook.com/mobile_release_updates` every 6
+minutes. The override now also sets `updateintervalfromserver` (1) to false,
+`updateintervalinitial` (15) and `updateintervalnonetw` (26) to 1,000,000
+minutes and `jsonqueryurl` (21) to the closed local URL
+`https://127.0.0.1:9/`. The URL covers the single check a cold-booted otad can
+make before the MobileConfig service starts. See finding 175. Devices that
+carry the earlier gate-only file are upgraded in place.
 
 The dedicated UI packages `com.facebook.aloha.otaui` and
 `com.facebook.aloha.alohaotasetup` are also disabled for user 0. The broader

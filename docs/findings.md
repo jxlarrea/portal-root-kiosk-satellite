@@ -2271,3 +2271,68 @@ with SELinux enforcing and no temporary root ADB listener. Subsequent live
 requests switched dark to light and back to dark, each from UID 1000 with
 status `0`. Re-running the ordinary provisioner then verified the existing
 controller and completed without an exploit or reboot.
+
+175. Investigated issue #28, where every Portal Go provisioning run reported
+`firmware_gate_false=0` and re-ran the exploit. Three Portal Go devices on
+5051355900018050 kept the override across boots: Meta's client logged
+`latestBoolean: false, source: OVERRIDE` for parameter 36 after 3, 10 and 20
+days of uptime. The terry `alohausers` override parser only reloads
+`mc_overrides.json`. The only code that deletes overrides is the MobileConfig
+debug screen. The failing check was the preflight itself. It read
+`dumpsys facebook.aloha.otaservice` once with a 10 second timeout. While otad
+is starting, that dump stops before its config section, and a timeout aborted
+the run. The preflight now retries for 30 seconds, treats a dump without
+`Dump OtaConfig` as incomplete and survives a `dumpsys` timeout.
+
+The same work found that the OTA block did not stop otad from contacting Meta.
+`OtaUpdater::doUpdate` uses `firmware_ota_update_enable` to pick endpoints:
+true selects `jsonnewqueryurl` (`graph.facebook.com/firmware_ota_update`) and
+false selects `jsonqueryurl` (`graph.facebook.com/mobile_release_updates`) with
+`jsonbackupqueryurl` (`portalupdates.facebook.com`) as the second entry. With
+the gate off, otad still sent its device type, signature, build and access
+token to `mobile_release_updates` every 6 minutes. Unit 5014 only defines
+`jsonqueryurl` among the three URLs, so redirecting URLs would push otad to
+the backup server, whose query format also carries `device_serial`.
+
+The override now also sets `1: updateintervalfromserver: false`,
+`15: updateintervalinitial: 1000000` and `26: updateintervalnonetw: 1000000`.
+otad multiplies the interval by 60 into a signed 32-bit second count and
+`OtaService::waitForCaller` skips the wait for values below 1, so the value
+must stay below 35791394. All five archived firmwares (aloha, ripley, omni,
+cipher and terry) use the same unit 5014 indexes and their otad reads the
+same four keys. The installer upgrades the exact gate-only file from earlier
+versions in place and still refuses any other existing override.
+
+On Portal Go 192.168.1.76 the install logged `existed=1 upgraded=1 ok=1` and
+both verification boots, `c7f13aef-b1ee-49aa-bf9c-e3a30eb9807c` and
+`1ac3f65d-af6d-4f0a-9d96-d3a6614deacb`, reported
+`poll_interval_minutes=1000000 source=OVERRIDE`. otad logged
+`Sleeping for 1000000 minutes` and made no update request in 15 minutes, while
+the control device on the gate-only override made one every 6 minutes. A
+second `--disable-updates` run skipped with
+`poll_interval_minutes=1000000 dump=complete action=skip` and no exploit.
+
+On a cold boot otad can start before the MobileConfig service. That instance
+logs `Can't connect to service` and sleeps for its compiled default of 241
+minutes, then checks once before it reads the override and sleeps for
+1,000,000 minutes. The override therefore also sets `21: jsonqueryurl` to
+`https://127.0.0.1:9/`. `OtaUpdater::doUpdate` builds the check URL from the
+effective `jsonqueryurl` whenever the gate is false, so that single check goes
+to a closed local port. The gate's fallback endpoint,
+`portalupdates.facebook.com`, returns NXDOMAIN from public resolvers and from
+the Portal, and unit 5014 has no parameter for it. The true-gate endpoint,
+`graph.facebook.com/firmware_ota_update`, is never selected while the gate
+stays false.
+
+`--enable-updates` on 192.168.1.76 removed the file (`backup=0 absent=1
+ok=1`) and otad returned to `kUpdateIntervalInitialMinutes=241` with Meta's
+URL, so the restore path works against the extended override. The following
+`--disable-updates` run installed the five-line override on a fresh file
+(`existed=0 upgraded=0 ok=1`, exploit attempt 5). Both verification boots,
+`52988d4e-d3b3-4488-b444-7ae43c36bf93` and
+`a74a01de-241b-4afd-82dc-a8239f9710bc`, reported
+`poll_interval_minutes=1000000 update_url=https://127.0.0.1:9/ source=OVERRIDE`.
+On the second boot otad started before MobileConfig and slept for 241
+minutes, while its effective config already read `kOtaJsonUrl` as
+`https://127.0.0.1:9/`. The wake-up check at the end of that sleep is the
+remaining observation.
